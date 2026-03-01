@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import base64
 import os
-import time
 
 import requests
 import streamlit as st
@@ -104,37 +103,95 @@ def _get_remote_sha(url: str, headers: dict, branch: str) -> str | None:
 
 def push_db(local_path: str, commit_msg: str = "Update database") -> bool:
     """
-    Push the local database file to GitHub.
+    Push the local database file to GitHub using the Git Data API.
+    Handles files of any size (up to 100 MB) — avoids the ~1 MB limit
+    of the Contents API that causes HTTP 422 errors.
     Returns True on success, False on failure.
-    Called after every write operation so new records persist.
     """
     cfg = _cfg()
     if not cfg["token"]:
         return False  # silently skip — warning already shown at startup
 
+    base = f"https://api.github.com/repos/{cfg['owner']}/{cfg['repo']}"
+    hdrs = _headers(cfg)
+    branch = cfg["branch"]
+
     try:
         with open(local_path, "rb") as f:
-            content_b64 = base64.b64encode(f.read()).decode()
+            raw_bytes = f.read()
+        content_b64 = base64.b64encode(raw_bytes).decode()
 
-        url = _api_url(cfg)
-        hdrs = _headers(cfg)
-
-        # Get the current SHA (needed by GitHub API to update an existing file)
-        sha = _get_remote_sha(url, frozenset(hdrs.items()), cfg["branch"])
-        # Clear the cache so next call fetches fresh SHA
-        _get_remote_sha.clear()
-
-        payload: dict = {
-            "message": commit_msg,
-            "content": content_b64,
-            "branch":  cfg["branch"],
-        }
-        if sha:
-            payload["sha"] = sha
-
-        r = requests.put(url, headers=hdrs, json=payload, timeout=60)
+        # ── Step 1: create a blob with the new file content ──────────────────
+        r = requests.post(
+            f"{base}/git/blobs",
+            headers=hdrs,
+            json={"content": content_b64, "encoding": "base64"},
+            timeout=120,
+        )
         r.raise_for_status()
+        blob_sha = r.json()["sha"]
+
+        # ── Step 2: get the current branch tip commit SHA + its tree SHA ─────
+        r = requests.get(
+            f"{base}/git/refs/heads/{branch}",
+            headers=hdrs,
+            timeout=15,
+        )
+        r.raise_for_status()
+        tip_sha = r.json()["object"]["sha"]
+
+        r = requests.get(
+            f"{base}/git/commits/{tip_sha}",
+            headers=hdrs,
+            timeout=15,
+        )
+        r.raise_for_status()
+        base_tree_sha = r.json()["tree"]["sha"]
+
+        # ── Step 3: create a new tree that updates only our DB file ──────────
+        r = requests.post(
+            f"{base}/git/trees",
+            headers=hdrs,
+            json={
+                "base_tree": base_tree_sha,
+                "tree": [{
+                    "path": cfg["path"],
+                    "mode": "100644",
+                    "type": "blob",
+                    "sha":  blob_sha,
+                }],
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        new_tree_sha = r.json()["sha"]
+
+        # ── Step 4: create a commit ───────────────────────────────────────────
+        r = requests.post(
+            f"{base}/git/commits",
+            headers=hdrs,
+            json={
+                "message": commit_msg,
+                "tree":    new_tree_sha,
+                "parents": [tip_sha],
+            },
+            timeout=30,
+        )
+        r.raise_for_status()
+        new_commit_sha = r.json()["sha"]
+
+        # ── Step 5: advance the branch ref ───────────────────────────────────
+        r = requests.patch(
+            f"{base}/git/refs/heads/{branch}",
+            headers=hdrs,
+            json={"sha": new_commit_sha},
+            timeout=15,
+        )
+        r.raise_for_status()
+        # Invalidate cached SHA so the next push fetches fresh state
+        _get_remote_sha.clear()
         return True
+
     except Exception as exc:
         st.warning(f"Record saved locally, but GitHub sync failed: {exc}")
         return False
