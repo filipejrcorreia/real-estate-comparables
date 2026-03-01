@@ -29,7 +29,10 @@ import streamlit as st
 
 def _cfg() -> dict:
     """Return GitHub config from Streamlit secrets."""
-    gh = st.secrets.get("github", {})
+    try:
+        gh = st.secrets.get("github", {})
+    except Exception:
+        gh = {}
     return {
         "token":  gh.get("token", ""),
         "owner":  gh.get("db_owner",  "filipejrcorreia"),
