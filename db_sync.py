@@ -61,16 +61,9 @@ def fetch_db(local_path: str) -> bool:
     Returns True on success, False on failure.
     Called once at app startup if the db file is missing.
     """
-    # Re-download if missing OR if the file is too small to be a real DB
-    # (Streamlit Cloud may have a stale empty file from a previous failed startup).
-    if os.path.exists(local_path):
-        try:
-            import sqlite3 as _sq
-            c = _sq.connect(local_path).execute("SELECT COUNT(*) FROM comparables")
-            if c.fetchone()[0] > 0:
-                return True   # valid DB with data — skip download
-        except Exception:
-            pass   # corrupt / empty / missing table — fall through to download
+    # Always pull the latest DB from GitHub on startup.
+    # The file is small (~700 KB) so the download is fast, and this guarantees
+    # the app never gets stuck with a stale/partial DB from a previous run.
 
     cfg = _cfg()
     if not cfg["token"]:
