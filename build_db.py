@@ -2,16 +2,20 @@
 """
 build_db.py
 -----------
-Reads 'FINAL COMPARABLE SPREADSHEET 2026.xlsm' and loads every record into a
-local SQLite database (comparables.db).
+Reads a comparables Excel spreadsheet (.xlsm / .xlsx) and loads every record
+into a local SQLite database (comparables.db).
 
-Run once at setup, and again whenever the spreadsheet is updated:
-    python3 build_db.py
+Usage:
+    python3 build_db.py                          # uses default file path
+    python3 build_db.py path/to/spreadsheet.xlsm # custom file path
+    python3 build_db.py --db custom.db path/to/spreadsheet.xlsm
 """
 
+import argparse
 import os
 import re
 import sqlite3
+import sys
 from datetime import datetime
 
 import openpyxl
@@ -286,4 +290,33 @@ def build_database():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Import a comparables Excel spreadsheet into SQLite."
+    )
+    parser.add_argument(
+        "excel",
+        nargs="?",
+        default=None,
+        metavar="SPREADSHEET",
+        help="Path to the .xlsm / .xlsx file (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--db",
+        default=None,
+        metavar="DATABASE",
+        help="Path for the output SQLite file (default: comparables.db)",
+    )
+    args = parser.parse_args()
+
+    if args.excel:
+        EXCEL_FILE = os.path.abspath(args.excel)
+    if args.db:
+        DB_FILE = os.path.abspath(args.db)
+
+    if not os.path.exists(EXCEL_FILE):
+        print(f"Error: spreadsheet not found at:\n  {EXCEL_FILE}")
+        print()
+        print("Usage:  python3 build_db.py path/to/spreadsheet.xlsm")
+        sys.exit(1)
+
     build_database()
