@@ -1,0 +1,4 @@
+[server]
+# Disable inotify-based file watcher — avoids "watch limit reached" errors
+# on Streamlit Community Cloud's shared Linux containers.
+fileWatcherType = "none"

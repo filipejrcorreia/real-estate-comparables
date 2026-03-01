@@ -270,7 +270,7 @@ def validate_record(record: dict) -> dict[str, list[str]]:
     if sale_date is not None:
         try:
             if isinstance(sale_date, str):
-                d = pd.to_datetime(sale_date).date()
+                d = pd.to_datetime(sale_date, dayfirst=True).date()
             elif hasattr(sale_date, "date"):
                 d = sale_date.date()
             else:
