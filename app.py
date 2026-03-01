@@ -787,8 +787,8 @@ with tab_import:
                         expanded=rows_with_errors > 0,
                     ):
                         st.caption(
-                            "Rows with **errors** will be skipped during import. "
-                            "Rows with **warnings** will still be imported."
+                            "Rows with **errors** will be imported with invalid fields set to blank. "
+                            "Rows with **warnings** will still be imported as-is."
                         )
                         st.dataframe(
                             pd.DataFrame(flagged),
@@ -810,39 +810,18 @@ with tab_import:
                 )
 
                 if confirm:
-                    # Collect row indices with errors to skip them
-                    error_rows: set[int] = set()
-                    for i, row in enumerate(data_up):
-                        rv = validate_record({
-                            "property_name":  _g(row, "Property Name"),
-                            "price_sold":     to_real(_g(row, "Price Sold")),
-                            "sale_date":      _g(row, "Date"),
-                            "sq_ft":          to_real(_g(row, "Sq. ft.")),
-                            "beds":           to_int(_g(row, "Bed")),
-                            "baths":          to_real(_g(row, "Bath")),
-                            "lot_size_acres": to_real(_g(row, "Lot Size")),
-                            "units":          to_int(_g(row, "No. Units")),
-                        })
-                        if rv["errors"]:
-                            error_rows.add(i)
-
                     progress = st.progress(0, text="Importing…")
                     _conn2 = get_conn()
                     try:
                         if "Replace" in import_mode:
                             _conn2.execute("DELETE FROM comparables")
 
-                        inserted = skipped = 0
-                        total     = len(data_up)
+                        inserted = 0
+                        total    = len(data_up)
 
                         for i, row in enumerate(data_up):
-                            if i in error_rows:
-                                skipped += 1
-                                continue
-                            pname = _g(row, "Property Name")
-                            if not pname:
-                                skipped += 1
-                                continue
+                            # Use "(Unnamed)" instead of skipping rows with no property name
+                            pname = str(_g(row, "Property Name") or "").strip() or "(Unnamed)"
 
                             parish_raw = str(_g(row, "Parish") or "")
                             type_raw   = str(_g(row, "Type")   or "")
@@ -864,6 +843,20 @@ with tab_import:
 
                             lot_raw, lot_acres = parse_lot_size(_g(row, "Lot Size"))
 
+                            # Sanitize: replace negative numeric values with NULL
+                            # (invalid values become blank rather than excluding the row)
+                            price_val = to_real(_g(row, "Price Sold"))
+                            sqft_val  = to_real(_g(row, "Sq. ft."))
+                            beds_val  = to_int(_g(row, "Bed"))
+                            baths_val = to_real(_g(row, "Bath"))
+                            units_val = to_int(_g(row, "No. Units"))
+                            if price_val  is not None and price_val  < 0: price_val  = None
+                            if sqft_val   is not None and sqft_val   < 0: sqft_val   = None
+                            if beds_val   is not None and beds_val   < 0: beds_val   = None
+                            if baths_val  is not None and baths_val  < 0: baths_val  = None
+                            if lot_acres  is not None and lot_acres  < 0: lot_acres  = None
+                            if units_val  is not None and units_val  < 0: units_val  = None
+
                             _conn2.execute("""
                                 INSERT INTO comparables (
                                     property_name, address,
@@ -877,17 +870,17 @@ with tab_import:
                                     zone, notes, country
                                 ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                             """, (
-                                str(pname).strip(),
+                                pname,
                                 str(_g(row, "Address") or "").strip() or None,
                                 parish_raw or None,
                                 normalize_parish(parish_raw) if parish_raw else None,
-                                to_real(_g(row, "Price Sold")),
+                                price_val,
                                 sd_str, sd_year, sd_mon,
-                                to_real(_g(row, "Sq. ft.")),
-                                to_int(_g(row, "Bed")),
-                                to_real(_g(row, "Bath")),
+                                sqft_val,
+                                beds_val,
+                                baths_val,
                                 lot_raw, lot_acres,
-                                to_int(_g(row, "No. Units")),
+                                units_val,
                                 to_real(_g(row, "ARV")),
                                 to_real(_g(row, "Assessment")),
                                 type_raw or None,
@@ -910,10 +903,8 @@ with tab_import:
                         _conn2.commit()
                         progress.progress(1.0, text="Done!")
                         action = "replaced with" if "Replace" in import_mode else "added —"
-                        error_skip_note = f", {len(error_rows)} error row(s) skipped" if error_rows else ""
                         st.success(
-                            f"✅ Import complete: **{inserted:,}** records {action} "
-                            f"({skipped} blank/invalid rows skipped{error_skip_note})."
+                            f"✅ Import complete: **{inserted:,}** records {action}."
                         )
                         push_db(DB_FILE, f"Batch import: {inserted} records ({import_mode.split()[0].lower()})")
                         load_lookup_data.clear()
