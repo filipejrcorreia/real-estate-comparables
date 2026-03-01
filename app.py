@@ -215,9 +215,15 @@ with st.sidebar:
     min_date = date(2020, 1, 1)
     max_date = date.today()
     if date_row["mn"]:
-        min_date = datetime.strptime(str(date_row["mn"])[:10], "%Y-%m-%d").date()
+        try:
+            min_date = pd.to_datetime(str(date_row["mn"])).date()
+        except Exception:
+            pass
     if date_row["mx"]:
-        max_date = datetime.strptime(str(date_row["mx"])[:10], "%Y-%m-%d").date()
+        try:
+            max_date = pd.to_datetime(str(date_row["mx"])).date()
+        except Exception:
+            pass
 
     date_from = st.date_input("From", value=min_date,
                               min_value=min_date, max_value=max_date)
@@ -253,8 +259,8 @@ with st.sidebar:
     units_max = c_u2.number_input("Units max", min_value=0, value=50, step=1)
 
     st.divider()
-    run_search = st.button("🔎 Search", use_container_width=True, type="primary")
-    clear      = st.button("↺ Reset Filters", use_container_width=True)
+    run_search = st.button("🔎 Search", width="stretch", type="primary")
+    clear      = st.button("↺ Reset Filters", width="stretch")
 
 # ── Reset ─────────────────────────────────────────────────────────────────────
 if clear:
@@ -363,7 +369,7 @@ with tab_res:
 
         st.dataframe(
             show_df,
-            use_container_width=True,
+            width="stretch",
             height=520,
             column_config={
                 "Sale Price ($)": st.column_config.NumberColumn(format="$%d"),
@@ -393,7 +399,7 @@ with tab_chart:
                     fig = px.histogram(price_df, nbins=30, labels={"value": "Price ($)"},
                                        color_discrete_sequence=["#1F3864"])
                     fig.update_layout(showlegend=False, margin=dict(t=20))
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
 
             # Count by Parish
             parish_counts = df["parish"].value_counts().reset_index()
@@ -405,7 +411,7 @@ with tab_chart:
                               color_discrete_sequence=px.colors.qualitative.Set2)
                 fig2.update_layout(showlegend=False, margin=dict(t=20),
                                    xaxis_tickangle=-40)
-                st.plotly_chart(fig2, use_container_width=True)
+                st.plotly_chart(fig2, width="stretch")
 
             c3, c4 = st.columns(2)
 
@@ -417,7 +423,7 @@ with tab_chart:
                 fig3 = px.pie(type_counts, names="Type", values="Count",
                               hole=0.4)
                 fig3.update_layout(margin=dict(t=20))
-                st.plotly_chart(fig3, use_container_width=True)
+                st.plotly_chart(fig3, width="stretch")
 
             # Average price over time (by year)
             yr_df = df.dropna(subset=["price_sold", "sale_date"]).copy()
@@ -431,7 +437,7 @@ with tab_chart:
                                    markers=True,
                                    color_discrete_sequence=["#1F3864"])
                     fig4.update_layout(margin=dict(t=20))
-                    st.plotly_chart(fig4, use_container_width=True)
+                    st.plotly_chart(fig4, width="stretch")
 
             # Price vs Sq Ft scatter
             scatter_df = df.dropna(subset=["price_sold", "sq_ft"])
@@ -445,7 +451,7 @@ with tab_chart:
                     opacity=0.7,
                 )
                 fig5.update_layout(margin=dict(t=20))
-                st.plotly_chart(fig5, use_container_width=True)
+                st.plotly_chart(fig5, width="stretch")
 
         except ImportError:
             # Fallback – native Streamlit charts
@@ -472,7 +478,7 @@ with tab_export:
                 data=to_csv(df),
                 file_name=f"comparables_export_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                 mime="text/csv",
-                use_container_width=True,
+                width="stretch",
             )
 
         with col_xlsx:
@@ -482,7 +488,7 @@ with tab_export:
                 data=xlsx_bytes,
                 file_name=f"comparables_report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
+                width="stretch",
             )
 
         st.divider()
@@ -517,11 +523,11 @@ with tab_export:
         with r1:
             st.markdown("**By Parish**")
             p = df["parish"].value_counts().rename_axis("Parish").reset_index(name="Count")
-            st.dataframe(p, use_container_width=True, hide_index=True)
+            st.dataframe(p, width="stretch", hide_index=True)
         with r2:
             st.markdown("**By Property Type**")
             t = df["type"].value_counts().rename_axis("Type").reset_index(name="Count")
-            st.dataframe(t, use_container_width=True, hide_index=True)
+            st.dataframe(t, width="stretch", hide_index=True)
 
 # ────────────────────────────────────────────────── Add Record ────
 with tab_add:
@@ -573,7 +579,7 @@ with tab_add:
 
         notes = st.text_area("Notes", placeholder="Any additional notes…")
 
-        submitted = st.form_submit_button("💾 Save Record", type="primary", use_container_width=True)
+        submitted = st.form_submit_button("💾 Save Record", type="primary", width="stretch")
 
         if submitted:
             if not prop_name.strip():
@@ -723,13 +729,13 @@ with tab_import:
                     })
 
                 st.markdown(f"**{len(data_up):,} data rows detected** — preview of first 10:")
-                st.dataframe(pd.DataFrame(preview_records), use_container_width=True, hide_index=True)
+                st.dataframe(pd.DataFrame(preview_records), width="stretch", hide_index=True)
 
                 confirm = st.button(
                     f"{'⚠️ Replace all &amp; import' if 'Replace' in import_mode else '📥 Import'} "
                     f"{len(data_up):,} records",
                     type="primary",
-                    use_container_width=True,
+                    width="stretch",
                 )
 
                 if confirm:
