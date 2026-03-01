@@ -20,6 +20,10 @@ from comparables_utils import (
     run_query,
 )
 from db_sync import fetch_db, push_db
+from build_db import (
+    normalize_parish, normalize_type,
+    parse_lot_size, clean_yn, to_real, to_int,
+)
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -309,8 +313,8 @@ k5.metric("Max Price",
 st.divider()
 
 # ── Tabs: Results | Charts | Export ──────────────────────────────────────────
-tab_res, tab_chart, tab_export, tab_add = st.tabs(
-    ["📋 Results Table", "📊 Charts & Analytics", "⬇️ Export / Report", "➕ Add Record"]
+tab_res, tab_chart, tab_export, tab_add, tab_import = st.tabs(
+    ["📋 Results Table", "📊 Charts & Analytics", "⬇️ Export / Report", "➕ Add Record", "📥 Import File"]
 )
 
 # ────────────────────────────────────────────────────────── Results Table ─────
@@ -624,3 +628,202 @@ with tab_add:
                     st.error(f"Failed to save: {exc}")
                 finally:
                     _conn.close()
+
+# ──────────────────────────────────────────────────────── Import File ─────────
+with tab_import:
+    st.subheader("📥 Batch Import from Excel")
+    st.caption(
+        "Upload an `.xlsx` or `.xlsm` file. "
+        "The sheet must follow the standard 19-column layout (same as the original spreadsheet). "
+        "Duplicate records are **not** automatically detected — review the preview before importing."
+    )
+
+    uploaded = st.file_uploader(
+        "Choose a spreadsheet",
+        type=["xlsx", "xlsm"],
+        label_visibility="collapsed",
+    )
+
+    if uploaded:
+        import openpyxl as _openpyxl
+        import io as _io
+
+        try:
+            wb_up = _openpyxl.load_workbook(
+                _io.BytesIO(uploaded.read()), read_only=True, keep_vba=False
+            )
+        except Exception as e:
+            st.error(f"Could not open file: {e}")
+            wb_up = None
+
+        if wb_up:
+            sheet_names = wb_up.sheetnames
+            chosen_sheet = st.selectbox(
+                "Sheet to import",
+                sheet_names,
+                index=sheet_names.index("Sheet1") if "Sheet1" in sheet_names else 0,
+            )
+
+            import_mode = st.radio(
+                "Import mode",
+                ["Append to existing records", "Replace ALL existing records"],
+                captions=[
+                    "New rows are added; current records are kept.",
+                    "⚠️ Deletes every current record before importing.",
+                ],
+            )
+
+            ws_up = wb_up[chosen_sheet]
+            all_rows = [r for r in ws_up.iter_rows(values_only=True)
+                        if any(v is not None for v in r)]
+
+            if len(all_rows) < 2:
+                st.warning("Sheet appears to be empty or has no data rows.")
+            else:
+                header_up = all_rows[0]
+                data_up   = all_rows[1:]
+                col_up    = {str(name).strip(): idx
+                             for idx, name in enumerate(header_up) if name}
+
+                def _g(row, name, default=None):
+                    idx = col_up.get(name)
+                    if idx is None or idx >= len(row):
+                        return default
+                    v = row[idx]
+                    return v if v is not None else default
+
+                EXPECTED = [
+                    "Property Name", "Address", "Parish", "Price Sold",
+                    "Date", "Sq. ft.", "Bed", "Bath", "Lot Size",
+                    "No. Units", "ARV", "Assessment", "Type",
+                    "Guest", "Pool", "Waterfront", "Listed", "Zone", "Notes",
+                ]
+                missing_cols = [c for c in EXPECTED if c not in col_up]
+                if missing_cols:
+                    st.warning(
+                        f"⚠️ {len(missing_cols)} expected column(s) not found in this sheet: "
+                        + ", ".join(f"`{c}`" for c in missing_cols)
+                        + "  \nRecognised columns will still be imported; missing ones will be blank."
+                    )
+
+                # Build preview DataFrame
+                preview_records = []
+                for row in data_up[:10]:
+                    pname = _g(row, "Property Name")
+                    price = to_real(_g(row, "Price Sold"))
+                    parish_raw = _g(row, "Parish")
+                    type_raw   = _g(row, "Type")
+                    preview_records.append({
+                        "Property Name":   str(pname) if pname else "",
+                        "Parish":          normalize_parish(str(parish_raw)) if parish_raw else "",
+                        "Type":            normalize_type(str(type_raw))   if type_raw   else "",
+                        "Price Sold ($)": f"${price:,.0f}" if price else "",
+                        "Date":            str(_g(row, "Date") or "")[:10],
+                        "Sq. ft.":         str(to_real(_g(row, "Sq. ft.")) or ""),
+                    })
+
+                st.markdown(f"**{len(data_up):,} data rows detected** — preview of first 10:")
+                st.dataframe(pd.DataFrame(preview_records), use_container_width=True, hide_index=True)
+
+                confirm = st.button(
+                    f"{'⚠️ Replace all &amp; import' if 'Replace' in import_mode else '📥 Import'} "
+                    f"{len(data_up):,} records",
+                    type="primary",
+                    use_container_width=True,
+                )
+
+                if confirm:
+                    progress = st.progress(0, text="Importing…")
+                    _conn2 = get_conn()
+                    try:
+                        if "Replace" in import_mode:
+                            _conn2.execute("DELETE FROM comparables")
+
+                        inserted = skipped = 0
+                        total     = len(data_up)
+
+                        for i, row in enumerate(data_up):
+                            pname = _g(row, "Property Name")
+                            if not pname:
+                                skipped += 1
+                                continue
+
+                            parish_raw = str(_g(row, "Parish") or "")
+                            type_raw   = str(_g(row, "Type")   or "")
+                            date_raw   = _g(row, "Date")
+
+                            if hasattr(date_raw, "strftime"):
+                                sd_str  = date_raw.strftime("%Y-%m-%d")
+                                sd_year = date_raw.year
+                                sd_mon  = date_raw.month
+                            elif date_raw:
+                                sd_str  = str(date_raw)[:10]
+                                try:
+                                    _d = date.fromisoformat(sd_str)
+                                    sd_year, sd_mon = _d.year, _d.month
+                                except ValueError:
+                                    sd_year = sd_mon = None
+                            else:
+                                sd_str = sd_year = sd_mon = None
+
+                            lot_raw, lot_acres = parse_lot_size(_g(row, "Lot Size"))
+
+                            _conn2.execute("""
+                                INSERT INTO comparables (
+                                    property_name, address,
+                                    parish, parish_normalized,
+                                    price_sold, sale_date, sale_year, sale_month,
+                                    sq_ft, beds, baths,
+                                    lot_size_raw, lot_size_acres,
+                                    no_units, arv, assessment,
+                                    property_type, property_type_normalized,
+                                    guest, pool, waterfront, listed,
+                                    zone, notes, country
+                                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                            """, (
+                                str(pname).strip(),
+                                str(_g(row, "Address") or "").strip() or None,
+                                parish_raw or None,
+                                normalize_parish(parish_raw) if parish_raw else None,
+                                to_real(_g(row, "Price Sold")),
+                                sd_str, sd_year, sd_mon,
+                                to_real(_g(row, "Sq. ft.")),
+                                to_int(_g(row, "Bed")),
+                                to_real(_g(row, "Bath")),
+                                lot_raw, lot_acres,
+                                to_int(_g(row, "No. Units")),
+                                to_real(_g(row, "ARV")),
+                                to_real(_g(row, "Assessment")),
+                                type_raw or None,
+                                normalize_type(type_raw) if type_raw else None,
+                                clean_yn(_g(row, "Guest")),
+                                clean_yn(_g(row, "Pool")),
+                                clean_yn(_g(row, "Waterfront")),
+                                clean_yn(_g(row, "Listed")),
+                                str(_g(row, "Zone") or "").strip() or None,
+                                str(_g(row, "Notes") or "").strip() or None,
+                                "Bermuda",
+                            ))
+                            inserted += 1
+                            if i % 50 == 0:
+                                progress.progress(
+                                    min(i / total, 0.99),
+                                    text=f"Importing… {i:,}/{total:,}"
+                                )
+
+                        _conn2.commit()
+                        progress.progress(1.0, text="Done!")
+                        action = "replaced with" if "Replace" in import_mode else "added —"
+                        st.success(
+                            f"✅ Import complete: **{inserted:,}** records {action} "
+                            f"({skipped} blank rows skipped)."
+                        )
+                        push_db(DB_FILE, f"Batch import: {inserted} records ({import_mode.split()[0].lower()})")
+                        load_lookup_data.clear()
+                        st.rerun()
+
+                    except Exception as exc:
+                        _conn2.rollback()
+                        st.error(f"Import failed and was rolled back: {exc}")
+                    finally:
+                        _conn2.close()
