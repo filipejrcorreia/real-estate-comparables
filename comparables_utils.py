@@ -270,7 +270,15 @@ def validate_record(record: dict) -> dict[str, list[str]]:
     if sale_date is not None:
         try:
             if isinstance(sale_date, str):
-                d = pd.to_datetime(sale_date, dayfirst=True).date()
+                # Try unambiguous formats first, then fall back to general parsing
+                for _fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y"):
+                    try:
+                        d = datetime.strptime(sale_date.strip(), _fmt).date()
+                        break
+                    except ValueError:
+                        continue
+                else:
+                    d = pd.to_datetime(sale_date, dayfirst=True).date()
             elif hasattr(sale_date, "date"):
                 d = sale_date.date()
             else:
