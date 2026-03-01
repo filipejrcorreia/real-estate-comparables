@@ -219,3 +219,132 @@ def run_query(conn: sqlite3.Connection, filters: dict) -> pd.DataFrame:
     """Execute a filter query against an open SQLite connection."""
     sql, params = build_query_sql(filters)
     return pd.read_sql_query(sql, conn, params=params)
+
+
+# ── Record validation ─────────────────────────────────────────────────────────
+
+def validate_record(record: dict) -> dict[str, list[str]]:
+    """
+    Validate a single comparable record.
+
+    Returns {"errors": [...], "warnings": [...]}.
+    Errors must be fixed before saving.
+    Warnings are shown as advisories but do not block saving.
+
+    Recognised keys (all optional except property_name):
+        property_name, price_sold, sale_date, sq_ft, beds, baths,
+        lot_size_acres, units, country
+    """
+    errors: list[str]   = []
+    warnings: list[str] = []
+    today = date.today()
+
+    # ── Property Name (required) ──────────────────────────────────────────────
+    if not str(record.get("property_name") or "").strip():
+        errors.append("Property Name is required.")
+
+    # ── Sale Price ────────────────────────────────────────────────────────────
+    price = record.get("price_sold")
+    if price is not None:
+        try:
+            p = float(price)
+            if p < 0:
+                errors.append("Sale Price cannot be negative.")
+            elif 0 < p < 1_000:
+                warnings.append(
+                    f"Sale Price ${p:,.0f} is very low — likely a data-entry error."
+                )
+            elif p > 20_000_000:
+                warnings.append(
+                    f"Sale Price ${p:,.0f} is unusually high (> $20M) — please verify."
+                )
+        except (ValueError, TypeError):
+            errors.append("Sale Price must be a number.")
+
+    # ── Sale Date ─────────────────────────────────────────────────────────────
+    sale_date = record.get("sale_date")
+    if sale_date is not None:
+        try:
+            if isinstance(sale_date, str):
+                d = pd.to_datetime(sale_date).date()
+            elif hasattr(sale_date, "date"):
+                d = sale_date.date()
+            else:
+                d = sale_date  # assume already a date
+            if d > today:
+                warnings.append(f"Sale Date {d} is in the future.")
+            if d.year < 1990:
+                warnings.append(f"Sale Date {d} is before 1990 — please verify.")
+        except Exception:
+            warnings.append("Sale Date could not be parsed — it will be stored as-is.")
+
+    # ── Sq. Ft. ───────────────────────────────────────────────────────────────
+    sq_ft = record.get("sq_ft")
+    if sq_ft is not None:
+        try:
+            s = float(sq_ft)
+            if s < 0:
+                errors.append("Sq. Ft. cannot be negative.")
+            elif 0 < s < 50:
+                warnings.append(f"Sq. Ft. {s:,.0f} is very small — please verify.")
+            elif s > 30_000:
+                warnings.append(f"Sq. Ft. {s:,.0f} is unusually large (> 30,000).")
+        except (ValueError, TypeError):
+            warnings.append("Sq. Ft. is not a valid number.")
+
+    # ── Beds ──────────────────────────────────────────────────────────────────
+    beds = record.get("beds")
+    if beds is not None:
+        try:
+            b = int(float(beds))
+            if b < 0:
+                errors.append("Beds cannot be negative.")
+            elif b > 30:
+                warnings.append(f"Beds value {b} seems very high — please verify.")
+        except (ValueError, TypeError):
+            warnings.append("Beds is not a valid integer.")
+
+    # ── Baths ─────────────────────────────────────────────────────────────────
+    baths = record.get("baths")
+    if baths is not None:
+        try:
+            ba = float(baths)
+            if ba < 0:
+                errors.append("Baths cannot be negative.")
+            elif ba > 20:
+                warnings.append(f"Baths value {ba} seems very high — please verify.")
+        except (ValueError, TypeError):
+            warnings.append("Baths is not a valid number.")
+
+    # ── Lot Size ──────────────────────────────────────────────────────────────
+    lot = record.get("lot_size_acres")
+    if lot is not None:
+        try:
+            la = float(lot)
+            if la < 0:
+                errors.append("Lot Size (acres) cannot be negative.")
+            elif la > 200:
+                warnings.append(
+                    f"Lot Size {la:.2f} acres is unusually large — please verify."
+                )
+        except (ValueError, TypeError):
+            warnings.append("Lot Size (acres) is not a valid number.")
+
+    # ── No. Units ─────────────────────────────────────────────────────────────
+    units = record.get("units")
+    if units is not None:
+        try:
+            u = int(float(units))
+            if u < 0:
+                errors.append("No. Units cannot be negative.")
+            elif u > 500:
+                warnings.append(f"No. Units {u} is unusually high — please verify.")
+        except (ValueError, TypeError):
+            warnings.append("No. Units is not a valid integer.")
+
+    # ── Country ───────────────────────────────────────────────────────────────
+    country = record.get("country")
+    if country is not None and not str(country).strip():
+        warnings.append("Country is blank — it will default to 'Bermuda'.")
+
+    return {"errors": errors, "warnings": warnings}

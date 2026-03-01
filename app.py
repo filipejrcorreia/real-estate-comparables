@@ -18,6 +18,7 @@ from comparables_utils import (
     to_csv,
     to_excel,
     run_query,
+    validate_record,
 )
 from db_sync import fetch_db, push_db
 from build_db import (
@@ -582,8 +583,32 @@ with tab_add:
         submitted = st.form_submit_button("💾 Save Record", type="primary", width="stretch")
 
         if submitted:
-            if not prop_name.strip():
-                st.error("⚠️ Property Name is required.")
+            vresult = validate_record({
+                "property_name":  prop_name,
+                "price_sold":     price_sold,
+                "sale_date":      sale_date,
+                "sq_ft":          sq_ft,
+                "beds":           beds,
+                "baths":          baths,
+                "lot_size_acres": lot_size_acres,
+                "units":          units,
+                "country":        country,
+            })
+
+            for err in vresult["errors"]:
+                st.error(f"❌ {err}")
+            for wrn in vresult["warnings"]:
+                st.warning(f"⚠️ {wrn}")
+
+            if vresult["errors"]:
+                st.stop()
+
+            if parish_sel == "➕ Other…" and not parish_custom.strip():
+                st.error("❌ Please enter a parish name in the custom field.")
+                st.stop()
+            if type_sel == "➕ Other…" and not type_custom.strip():
+                st.error("❌ Please enter a property type in the custom field.")
+                st.stop()
             else:
                 parish_val = (parish_custom.strip() if parish_sel == "➕ Other…" else parish_sel) or None
                 type_val   = (type_custom.strip()   if type_sel   == "➕ Other…" else type_sel)   or None
@@ -731,6 +756,52 @@ with tab_import:
                 st.markdown(f"**{len(data_up):,} data rows detected** — preview of first 10:")
                 st.dataframe(pd.DataFrame(preview_records), width="stretch", hide_index=True)
 
+                # ── Validation report ──────────────────────────────────────
+                flagged = []
+                for i, row in enumerate(data_up):
+                    rv = validate_record({
+                        "property_name":  _g(row, "Property Name"),
+                        "price_sold":     to_real(_g(row, "Price Sold")),
+                        "sale_date":      _g(row, "Date"),
+                        "sq_ft":          to_real(_g(row, "Sq. ft.")),
+                        "beds":           to_int(_g(row, "Bed")),
+                        "baths":          to_real(_g(row, "Bath")),
+                        "lot_size_acres": to_real(_g(row, "Lot Size")),
+                        "units":          to_int(_g(row, "No. Units")),
+                    })
+                    all_issues = rv["errors"] + rv["warnings"]
+                    if all_issues:
+                        flagged.append({
+                            "Row":           i + 2,   # +2: 1-based + header row
+                            "Property Name": str(_g(row, "Property Name") or ""),
+                            "Issues":        " | ".join(all_issues),
+                            "Severity":      "❌ Error" if rv["errors"] else "⚠️ Warning",
+                        })
+
+                rows_with_errors = sum(1 for f in flagged if f["Severity"] == "❌ Error")
+
+                if flagged:
+                    with st.expander(
+                        f"🔍 Validation report: {len(flagged)} row(s) flagged "
+                        f"({rows_with_errors} error(s), {len(flagged) - rows_with_errors} warning(s))",
+                        expanded=rows_with_errors > 0,
+                    ):
+                        st.caption(
+                            "Rows with **errors** will be skipped during import. "
+                            "Rows with **warnings** will still be imported."
+                        )
+                        st.dataframe(
+                            pd.DataFrame(flagged),
+                            width="stretch",
+                            hide_index=True,
+                            column_config={
+                                "Row":      st.column_config.NumberColumn(width="small"),
+                                "Severity": st.column_config.TextColumn(width="small"),
+                            },
+                        )
+                else:
+                    st.success("✅ All rows passed validation.")
+
                 confirm = st.button(
                     f"{'⚠️ Replace all &amp; import' if 'Replace' in import_mode else '📥 Import'} "
                     f"{len(data_up):,} records",
@@ -739,6 +810,22 @@ with tab_import:
                 )
 
                 if confirm:
+                    # Collect row indices with errors to skip them
+                    error_rows: set[int] = set()
+                    for i, row in enumerate(data_up):
+                        rv = validate_record({
+                            "property_name":  _g(row, "Property Name"),
+                            "price_sold":     to_real(_g(row, "Price Sold")),
+                            "sale_date":      _g(row, "Date"),
+                            "sq_ft":          to_real(_g(row, "Sq. ft.")),
+                            "beds":           to_int(_g(row, "Bed")),
+                            "baths":          to_real(_g(row, "Bath")),
+                            "lot_size_acres": to_real(_g(row, "Lot Size")),
+                            "units":          to_int(_g(row, "No. Units")),
+                        })
+                        if rv["errors"]:
+                            error_rows.add(i)
+
                     progress = st.progress(0, text="Importing…")
                     _conn2 = get_conn()
                     try:
@@ -749,6 +836,9 @@ with tab_import:
                         total     = len(data_up)
 
                         for i, row in enumerate(data_up):
+                            if i in error_rows:
+                                skipped += 1
+                                continue
                             pname = _g(row, "Property Name")
                             if not pname:
                                 skipped += 1
@@ -820,9 +910,10 @@ with tab_import:
                         _conn2.commit()
                         progress.progress(1.0, text="Done!")
                         action = "replaced with" if "Replace" in import_mode else "added —"
+                        error_skip_note = f", {len(error_rows)} error row(s) skipped" if error_rows else ""
                         st.success(
                             f"✅ Import complete: **{inserted:,}** records {action} "
-                            f"({skipped} blank rows skipped)."
+                            f"({skipped} blank/invalid rows skipped{error_skip_note})."
                         )
                         push_db(DB_FILE, f"Batch import: {inserted} records ({import_mode.split()[0].lower()})")
                         load_lookup_data.clear()

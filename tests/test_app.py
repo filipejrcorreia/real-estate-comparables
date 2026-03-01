@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from comparables_utils import (
     fmt_currency, summary_stats, to_csv, to_excel,
-    build_query_sql, run_query,
+    build_query_sql, run_query, validate_record,
 )
 from tests.conftest import SAMPLE_ROWS
 
@@ -369,3 +369,134 @@ class TestRunQuery:
     def test_country_filter_no_match(self, mem_db):
         df = run_query(mem_db, {"country": "NonExistentCountry"})
         assert len(df) == 0
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# validate_record
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestValidateRecord:
+    """Tests for validate_record() in comparables_utils."""
+
+    # --- property_name ---
+
+    def test_valid_record_no_issues(self):
+        r = validate_record({"property_name": "Harbour View", "price_sold": 500_000})
+        assert r["errors"] == [] and r["warnings"] == []
+
+    def test_missing_property_name_error(self):
+        r = validate_record({"property_name": ""})
+        assert any("required" in e.lower() for e in r["errors"])
+
+    def test_none_property_name_error(self):
+        r = validate_record({"property_name": None})
+        assert r["errors"]
+
+    # --- price_sold ---
+
+    def test_negative_price_is_error(self):
+        r = validate_record({"property_name": "Test", "price_sold": -1})
+        assert r["errors"]
+
+    def test_low_price_is_warning(self):
+        r = validate_record({"property_name": "Test", "price_sold": 500})
+        assert r["warnings"] and not r["errors"]
+
+    def test_high_price_is_warning(self):
+        r = validate_record({"property_name": "Test", "price_sold": 25_000_000})
+        assert r["warnings"] and not r["errors"]
+
+    def test_normal_price_ok(self):
+        r = validate_record({"property_name": "Test", "price_sold": 750_000})
+        assert not r["errors"] and not r["warnings"]
+
+    # --- sale_date ---
+
+    def test_future_date_is_warning(self):
+        from datetime import timedelta
+        future = date.today() + timedelta(days=10)
+        r = validate_record({"property_name": "Test", "sale_date": future})
+        assert any("future" in w.lower() for w in r["warnings"])
+
+    def test_old_date_is_warning(self):
+        r = validate_record({"property_name": "Test", "sale_date": "1985-01-01"})
+        assert any("1990" in w for w in r["warnings"])
+
+    def test_normal_date_ok(self):
+        r = validate_record({"property_name": "Test", "sale_date": "2022-06-15"})
+        assert not r["errors"] and not r["warnings"]
+
+    # --- sq_ft ---
+
+    def test_negative_sqft_is_error(self):
+        r = validate_record({"property_name": "Test", "sq_ft": -100})
+        assert r["errors"]
+
+    def test_low_sqft_is_warning(self):
+        r = validate_record({"property_name": "Test", "sq_ft": 10})
+        assert r["warnings"] and not r["errors"]
+
+    def test_high_sqft_is_warning(self):
+        r = validate_record({"property_name": "Test", "sq_ft": 35_000})
+        assert r["warnings"] and not r["errors"]
+
+    # --- beds ---
+
+    def test_negative_beds_is_error(self):
+        r = validate_record({"property_name": "Test", "beds": -1})
+        assert r["errors"]
+
+    def test_high_beds_is_warning(self):
+        r = validate_record({"property_name": "Test", "beds": 35})
+        assert r["warnings"] and not r["errors"]
+
+    # --- baths ---
+
+    def test_negative_baths_is_error(self):
+        r = validate_record({"property_name": "Test", "baths": -1})
+        assert r["errors"]
+
+    def test_high_baths_is_warning(self):
+        r = validate_record({"property_name": "Test", "baths": 25})
+        assert r["warnings"] and not r["errors"]
+
+    # --- lot_size_acres ---
+
+    def test_negative_lot_is_error(self):
+        r = validate_record({"property_name": "Test", "lot_size_acres": -0.5})
+        assert r["errors"]
+
+    def test_high_lot_is_warning(self):
+        r = validate_record({"property_name": "Test", "lot_size_acres": 250})
+        assert r["warnings"] and not r["errors"]
+
+    # --- units ---
+
+    def test_negative_units_is_error(self):
+        r = validate_record({"property_name": "Test", "units": -1})
+        assert r["errors"]
+
+    def test_high_units_is_warning(self):
+        r = validate_record({"property_name": "Test", "units": 600})
+        assert r["warnings"] and not r["errors"]
+
+    # --- country ---
+
+    def test_blank_country_is_warning(self):
+        r = validate_record({"property_name": "Test", "country": ""})
+        assert r["warnings"] and not r["errors"]
+
+    def test_populated_country_ok(self):
+        r = validate_record({"property_name": "Test", "country": "Bermuda"})
+        assert not r["errors"] and not r["warnings"]
+
+    # --- multiple issues ---
+
+    def test_multiple_errors_collected(self):
+        r = validate_record({"property_name": "", "price_sold": -500, "sq_ft": -10})
+        assert len(r["errors"]) >= 3
+
+    def test_errors_and_warnings_independent(self):
+        # Error (negative price) + warning (blank country) should both appear
+        r = validate_record({"property_name": "Test", "price_sold": -1, "country": ""})
+        assert r["errors"] and r["warnings"]
