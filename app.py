@@ -19,6 +19,7 @@ from comparables_utils import (
     to_excel,
     run_query,
 )
+from db_sync import fetch_db, push_db
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -78,6 +79,7 @@ def ensure_db():
     conn.close()
 
 ensure_db()
+fetch_db(DB_FILE)
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
 def get_conn():
@@ -615,6 +617,7 @@ with tab_add:
                     ))
                     _conn.commit()
                     st.success(f"✅ **{prop_name.strip()}** saved successfully!")
+                    push_db(DB_FILE, f"Add record: {prop_name.strip()}")
                     load_lookup_data.clear()
                     st.rerun()
                 except Exception as exc:
