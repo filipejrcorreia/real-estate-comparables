@@ -677,17 +677,24 @@ with tab_import:
 
     if uploaded:
         import io as _io
+        import openpyxl as _openpyxl
 
-        file_bytes = uploaded.getvalue()  # idempotent read
+        file_bytes = uploaded.getvalue()
 
         try:
-            xl_file = pd.ExcelFile(_io.BytesIO(file_bytes), engine="openpyxl")
-            sheet_names = xl_file.sheet_names
+            # MUST use read_only=False (default): pandas and openpyxl read_only=True
+            # both trust the stale <dimension> tag in .xlsm files, capping rows at
+            # whatever Excel last saved (e.g. 105 instead of 1530).
+            # Normal mode ignores the tag and scans all rows.
+            wb_up = _openpyxl.load_workbook(
+                _io.BytesIO(file_bytes), data_only=True, keep_vba=False
+            )
+            sheet_names = wb_up.sheetnames
         except Exception as e:
             st.error(f"Could not open file: {e}")
-            xl_file = None
+            wb_up = None
 
-        if xl_file is not None:
+        if wb_up is not None:
             chosen_sheet = st.selectbox(
                 "Sheet to import",
                 sheet_names,
@@ -703,226 +710,222 @@ with tab_import:
                 ],
             )
 
-            try:
-                # dtype=object keeps raw Python types (strings, numbers, dates)
-                # pandas reads ALL rows regardless of stale <dimension> tags
-                df_up = xl_file.parse(chosen_sheet, header=0, dtype=object)
-            except Exception as e:
-                st.error(f"Could not read sheet '{chosen_sheet}': {e}")
-                df_up = None
+            ws_up = wb_up[chosen_sheet]
+            # Build a list of tuples; iter_rows in normal mode reads all rows
+            raw_rows = list(ws_up.iter_rows(values_only=True))
+            # Drop entirely-empty rows
+            raw_rows = [r for r in raw_rows if any(v is not None for v in r)]
 
-            if df_up is not None:
-                df_up.columns = [str(c).strip() for c in df_up.columns]
-                df_up = df_up.dropna(how="all")   # drop completely empty rows
+            if len(raw_rows) < 2:
+                st.warning("Sheet appears to be empty or has no data rows.")
+                st.stop()
 
-                # data_up is a list of dicts (one per row)
-                data_up = df_up.to_dict("records")
-                col_up  = {c: True for c in df_up.columns}   # for existence checks
+            header_up = [str(c).strip() if c is not None else "" for c in raw_rows[0]]
+            col_up    = {name: idx for idx, name in enumerate(header_up) if name}
 
-                def _g(row, name, default=None):
-                    v = row.get(str(name).strip(), default)
-                    if v is None:
+            # Convert to list-of-dicts so the rest of the code is column-name-based
+            data_up = [
+                {header_up[i]: v for i, v in enumerate(row) if i < len(header_up)}
+                for row in raw_rows[1:]
+            ]
+
+            def _g(row, name, default=None):
+                v = row.get(str(name).strip(), default)
+                if v is None:
+                    return default
+                try:
+                    if pd.isna(v):
                         return default
-                    try:
-                        if pd.isna(v):
-                            return default
-                    except (TypeError, ValueError):
-                        pass
-                    return v
+                except (TypeError, ValueError):
+                    pass
+                return v
 
-                if not data_up:
-                    st.warning("Sheet appears to be empty or has no data rows.")
-                    st.stop()
-
-                EXPECTED = [
-                    "Property Name", "Address", "Parish", "Price Sold",
-                    "Date", "Sq. ft.", "Bed", "Bath", "Lot Size",
-                    "No. Units", "ARV", "Assessment", "Type",
-                    "Guest", "Pool", "Waterfront", "Listed", "Zone", "Notes",
-                ]
-                missing_cols = [c for c in EXPECTED if c not in col_up]
-                if missing_cols:
-                    st.warning(
-                        f"⚠️ {len(missing_cols)} expected column(s) not found in this sheet: "
-                        + ", ".join(f"`{c}`" for c in missing_cols)
-                        + "  \nRecognised columns will still be imported; missing ones will be blank."
-                    )
-
-                # Build preview DataFrame
-                preview_records = []
-                for row in data_up[:10]:
-                    pname = _g(row, "Property Name")
-                    price = to_real(_g(row, "Price Sold"))
-                    parish_raw = _g(row, "Parish")
-                    type_raw   = _g(row, "Type")
-                    preview_records.append({
-                        "Property Name":   str(pname) if pname else "",
-                        "Parish":          normalize_parish(str(parish_raw)) if parish_raw else "",
-                        "Type":            normalize_type(str(type_raw))   if type_raw   else "",
-                        "Price Sold ($)": f"${price:,.0f}" if price else "",
-                        "Date":            str(_g(row, "Date") or "")[:10],
-                        "Sq. ft.":         str(to_real(_g(row, "Sq. ft.")) or ""),
-                    })
-
-                st.markdown(f"**{len(data_up):,} data rows detected** — preview of first 10:")
-                st.dataframe(pd.DataFrame(preview_records), width="stretch", hide_index=True)
-
-                # ── Validation report ──────────────────────────────────────
-                flagged = []
-                for i, row in enumerate(data_up):
-                    rv = validate_record({
-                        "property_name":  _g(row, "Property Name"),
-                        "price_sold":     to_real(_g(row, "Price Sold")),
-                        "sale_date":      _g(row, "Date"),
-                        "sq_ft":          to_real(_g(row, "Sq. ft.")),
-                        "beds":           to_int(_g(row, "Bed")),
-                        "baths":          to_real(_g(row, "Bath")),
-                        "lot_size_acres": to_real(_g(row, "Lot Size")),
-                        "units":          to_int(_g(row, "No. Units")),
-                    })
-                    all_issues = rv["errors"] + rv["warnings"]
-                    if all_issues:
-                        flagged.append({
-                            "Row":           i + 2,   # +2: 1-based + header row
-                            "Property Name": str(_g(row, "Property Name") or ""),
-                            "Issues":        " | ".join(all_issues),
-                            "Severity":      "❌ Error" if rv["errors"] else "⚠️ Warning",
-                        })
-
-                rows_with_errors = sum(1 for f in flagged if f["Severity"] == "❌ Error")
-
-                if flagged:
-                    with st.expander(
-                        f"🔍 Validation report: {len(flagged)} row(s) flagged "
-                        f"({rows_with_errors} error(s), {len(flagged) - rows_with_errors} warning(s))",
-                        expanded=rows_with_errors > 0,
-                    ):
-                        st.caption(
-                            "Rows with **errors** will be imported with invalid fields set to blank. "
-                            "Rows with **warnings** will still be imported as-is."
-                        )
-                        st.dataframe(
-                            pd.DataFrame(flagged),
-                            width="stretch",
-                            hide_index=True,
-                            column_config={
-                                "Row":      st.column_config.NumberColumn(width="small"),
-                                "Severity": st.column_config.TextColumn(width="small"),
-                            },
-                        )
-                else:
-                    st.success("✅ All rows passed validation.")
-
-                confirm = st.button(
-                    f"{'⚠️ Replace all &amp; import' if 'Replace' in import_mode else '📥 Import'} "
-                    f"{len(data_up):,} records",
-                    type="primary",
-                    width="stretch",
+            EXPECTED = [
+                "Property Name", "Address", "Parish", "Price Sold",
+                "Date", "Sq. ft.", "Bed", "Bath", "Lot Size",
+                "No. Units", "ARV", "Assessment", "Type",
+                "Guest", "Pool", "Waterfront", "Listed", "Zone", "Notes",
+            ]
+            missing_cols = [c for c in EXPECTED if c not in col_up]
+            if missing_cols:
+                st.warning(
+                    f"⚠️ {len(missing_cols)} expected column(s) not found in this sheet: "
+                    + ", ".join(f"`{c}`" for c in missing_cols)
+                    + "  \nRecognised columns will still be imported; missing ones will be blank."
                 )
 
-                if confirm:
-                    progress = st.progress(0, text="Importing…")
-                    _conn2 = get_conn()
-                    try:
-                        if "Replace" in import_mode:
-                            _conn2.execute("DELETE FROM comparables")
+            # Build preview DataFrame
+            preview_records = []
+            for row in data_up[:10]:
+                pname = _g(row, "Property Name")
+                price = to_real(_g(row, "Price Sold"))
+                parish_raw = _g(row, "Parish")
+                type_raw   = _g(row, "Type")
+                preview_records.append({
+                    "Property Name":   str(pname) if pname else "",
+                    "Parish":          normalize_parish(str(parish_raw)) if parish_raw else "",
+                    "Type":            normalize_type(str(type_raw))   if type_raw   else "",
+                    "Price Sold ($)": f"${price:,.0f}" if price else "",
+                    "Date":            str(_g(row, "Date") or "")[:10],
+                    "Sq. ft.":         str(to_real(_g(row, "Sq. ft.")) or ""),
+                })
 
-                        inserted = 0
-                        total    = len(data_up)
+            st.markdown(f"**{len(data_up):,} data rows detected** — preview of first 10:")
+            st.dataframe(pd.DataFrame(preview_records), width="stretch", hide_index=True)
 
-                        for i, row in enumerate(data_up):
-                            # Use "(Unnamed)" instead of skipping rows with no property name
-                            pname = str(_g(row, "Property Name") or "").strip() or "(Unnamed)"
+            # ── Validation report ──────────────────────────────────────
+            flagged = []
+            for i, row in enumerate(data_up):
+                rv = validate_record({
+                    "property_name":  _g(row, "Property Name"),
+                    "price_sold":     to_real(_g(row, "Price Sold")),
+                    "sale_date":      _g(row, "Date"),
+                    "sq_ft":          to_real(_g(row, "Sq. ft.")),
+                    "beds":           to_int(_g(row, "Bed")),
+                    "baths":          to_real(_g(row, "Bath")),
+                    "lot_size_acres": to_real(_g(row, "Lot Size")),
+                    "units":          to_int(_g(row, "No. Units")),
+                })
+                all_issues = rv["errors"] + rv["warnings"]
+                if all_issues:
+                    flagged.append({
+                        "Row":           i + 2,
+                        "Property Name": str(_g(row, "Property Name") or ""),
+                        "Issues":        " | ".join(all_issues),
+                        "Severity":      "❌ Error" if rv["errors"] else "⚠️ Warning",
+                    })
 
-                            parish_raw = str(_g(row, "Parish") or "")
-                            type_raw   = str(_g(row, "Type")   or "")
-                            date_raw   = _g(row, "Date")
+            rows_with_errors = sum(1 for f in flagged if f["Severity"] == "❌ Error")
 
-                            if hasattr(date_raw, "strftime"):
-                                sd_str  = date_raw.strftime("%Y-%m-%d")
-                                sd_year = date_raw.year
-                                sd_mon  = date_raw.month
-                            elif date_raw:
-                                sd_str  = str(date_raw)[:10]
-                                try:
-                                    _d = date.fromisoformat(sd_str)
-                                    sd_year, sd_mon = _d.year, _d.month
-                                except ValueError:
-                                    sd_year = sd_mon = None
-                            else:
-                                sd_str = sd_year = sd_mon = None
+            if flagged:
+                with st.expander(
+                    f"🔍 Validation report: {len(flagged)} row(s) flagged "
+                    f"({rows_with_errors} error(s), {len(flagged) - rows_with_errors} warning(s))",
+                    expanded=rows_with_errors > 0,
+                ):
+                    st.caption(
+                        "Rows with **errors** will be imported with invalid fields set to blank. "
+                        "Rows with **warnings** will still be imported as-is."
+                    )
+                    st.dataframe(
+                        pd.DataFrame(flagged),
+                        width="stretch",
+                        hide_index=True,
+                        column_config={
+                            "Row":      st.column_config.NumberColumn(width="small"),
+                            "Severity": st.column_config.TextColumn(width="small"),
+                        },
+                    )
+            else:
+                st.success("✅ All rows passed validation.")
 
-                            lot_raw, lot_acres = parse_lot_size(_g(row, "Lot Size"))
+            confirm = st.button(
+                f"{'⚠️ Replace all &amp; import' if 'Replace' in import_mode else '📥 Import'} "
+                f"{len(data_up):,} records",
+                type="primary",
+                width="stretch",
+            )
 
-                            # Sanitize: replace negative numeric values with NULL
-                            # (invalid values become blank rather than excluding the row)
-                            price_val = to_real(_g(row, "Price Sold"))
-                            sqft_val  = to_real(_g(row, "Sq. ft."))
-                            beds_val  = to_int(_g(row, "Bed"))
-                            baths_val = to_real(_g(row, "Bath"))
-                            units_val = to_int(_g(row, "No. Units"))
-                            if price_val  is not None and price_val  < 0: price_val  = None
-                            if sqft_val   is not None and sqft_val   < 0: sqft_val   = None
-                            if beds_val   is not None and beds_val   < 0: beds_val   = None
-                            if baths_val  is not None and baths_val  < 0: baths_val  = None
-                            if lot_acres  is not None and lot_acres  < 0: lot_acres  = None
-                            if units_val  is not None and units_val  < 0: units_val  = None
+            if confirm:
+                progress = st.progress(0, text="Importing…")
+                _conn2 = get_conn()
+                try:
+                    if "Replace" in import_mode:
+                        _conn2.execute("DELETE FROM comparables")
 
-                            _conn2.execute("""
-                                INSERT INTO comparables (
-                                    property_name, address,
-                                    parish, parish_normalized,
-                                    price_sold, sale_date, sale_year, sale_month,
-                                    sq_ft, beds, baths,
-                                    lot_size_raw, lot_size_acres,
-                                    no_units, arv, assessment,
-                                    property_type, property_type_normalized,
-                                    guest, pool, waterfront, listed,
-                                    zone, notes, country
-                                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                            """, (
-                                pname,
-                                str(_g(row, "Address") or "").strip() or None,
-                                parish_raw or None,
-                                normalize_parish(parish_raw) if parish_raw else None,
-                                price_val,
-                                sd_str, sd_year, sd_mon,
-                                sqft_val,
-                                beds_val,
-                                baths_val,
-                                lot_raw, lot_acres,
-                                units_val,
-                                to_real(_g(row, "ARV")),
-                                to_real(_g(row, "Assessment")),
-                                type_raw or None,
-                                normalize_type(type_raw) if type_raw else None,
-                                clean_yn(_g(row, "Guest")),
-                                clean_yn(_g(row, "Pool")),
-                                clean_yn(_g(row, "Waterfront")),
-                                clean_yn(_g(row, "Listed")),
-                                str(_g(row, "Zone") or "").strip() or None,
-                                str(_g(row, "Notes") or "").strip() or None,
-                                "Bermuda",
-                            ))
-                            inserted += 1
-                            if i % 50 == 0:
-                                progress.progress(
-                                    min(i / total, 0.99),
-                                    text=f"Importing… {i:,}/{total:,}"
-                                )
+                    inserted = 0
+                    total    = len(data_up)
 
-                        _conn2.commit()
-                        progress.progress(1.0, text="Done!")
-                        action = "replaced with" if "Replace" in import_mode else "added —"
-                        st.success(
-                            f"✅ Import complete: **{inserted:,}** records {action}."
-                        )
-                        push_db(DB_FILE, f"Batch import: {inserted} records ({import_mode.split()[0].lower()})")
-                        load_lookup_data.clear()
-                        st.rerun()
+                    for i, row in enumerate(data_up):
+                        pname = str(_g(row, "Property Name") or "").strip() or "(Unnamed)"
 
-                    except Exception as exc:
-                        _conn2.rollback()
-                        st.error(f"Import failed and was rolled back: {exc}")
-                    finally:
-                        _conn2.close()
+                        parish_raw = str(_g(row, "Parish") or "")
+                        type_raw   = str(_g(row, "Type")   or "")
+                        date_raw   = _g(row, "Date")
+
+                        if hasattr(date_raw, "strftime"):
+                            sd_str  = date_raw.strftime("%Y-%m-%d")
+                            sd_year = date_raw.year
+                            sd_mon  = date_raw.month
+                        elif date_raw:
+                            sd_str  = str(date_raw)[:10]
+                            try:
+                                _d = date.fromisoformat(sd_str)
+                                sd_year, sd_mon = _d.year, _d.month
+                            except ValueError:
+                                sd_year = sd_mon = None
+                        else:
+                            sd_str = sd_year = sd_mon = None
+
+                        lot_raw, lot_acres = parse_lot_size(_g(row, "Lot Size"))
+
+                        price_val = to_real(_g(row, "Price Sold"))
+                        sqft_val  = to_real(_g(row, "Sq. ft."))
+                        beds_val  = to_int(_g(row, "Bed"))
+                        baths_val = to_real(_g(row, "Bath"))
+                        units_val = to_int(_g(row, "No. Units"))
+                        if price_val  is not None and price_val  < 0: price_val  = None
+                        if sqft_val   is not None and sqft_val   < 0: sqft_val   = None
+                        if beds_val   is not None and beds_val   < 0: beds_val   = None
+                        if baths_val  is not None and baths_val  < 0: baths_val  = None
+                        if lot_acres  is not None and lot_acres  < 0: lot_acres  = None
+                        if units_val  is not None and units_val  < 0: units_val  = None
+
+                        _conn2.execute("""
+                            INSERT INTO comparables (
+                                property_name, address,
+                                parish, parish_normalized,
+                                price_sold, sale_date, sale_year, sale_month,
+                                sq_ft, beds, baths,
+                                lot_size_raw, lot_size_acres,
+                                no_units, arv, assessment,
+                                property_type, property_type_normalized,
+                                guest, pool, waterfront, listed,
+                                zone, notes, country
+                            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """, (
+                            pname,
+                            str(_g(row, "Address") or "").strip() or None,
+                            parish_raw or None,
+                            normalize_parish(parish_raw) if parish_raw else None,
+                            price_val,
+                            sd_str, sd_year, sd_mon,
+                            sqft_val,
+                            beds_val,
+                            baths_val,
+                            lot_raw, lot_acres,
+                            units_val,
+                            to_real(_g(row, "ARV")),
+                            to_real(_g(row, "Assessment")),
+                            type_raw or None,
+                            normalize_type(type_raw) if type_raw else None,
+                            clean_yn(_g(row, "Guest")),
+                            clean_yn(_g(row, "Pool")),
+                            clean_yn(_g(row, "Waterfront")),
+                            clean_yn(_g(row, "Listed")),
+                            str(_g(row, "Zone") or "").strip() or None,
+                            str(_g(row, "Notes") or "").strip() or None,
+                            "Bermuda",
+                        ))
+                        inserted += 1
+                        if i % 50 == 0:
+                            progress.progress(
+                                min(i / total, 0.99),
+                                text=f"Importing… {i:,}/{total:,}"
+                            )
+
+                    _conn2.commit()
+                    progress.progress(1.0, text="Done!")
+                    action = "replaced with" if "Replace" in import_mode else "added —"
+                    st.success(
+                        f"✅ Import complete: **{inserted:,}** records {action}."
+                    )
+                    push_db(DB_FILE, f"Batch import: {inserted} records ({import_mode.split()[0].lower()})")
+                    load_lookup_data.clear()
+                    st.rerun()
+
+                except Exception as exc:
+                    _conn2.rollback()
+                    st.error(f"Import failed and was rolled back: {exc}")
+                finally:
+                    _conn2.close()
