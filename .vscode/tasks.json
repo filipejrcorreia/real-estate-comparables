@@ -1,0 +1,157 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run Streamlit App",
+			"type": "shell",
+			"command": "streamlit run app.py --server.port 8501",
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Run Streamlit App",
+			"type": "shell",
+			"command": "/home/filipejrcorreia/Documentos/upwork/comparable/.venv/bin/streamlit run app.py --server.port 8501",
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Run Streamlit App (local)",
+			"type": "shell",
+			"command": "/var/data/python/bin/streamlit run app.py --server.port 8501",
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Streamlit Local",
+			"type": "shell",
+			"command": "/var/data/python/bin/streamlit run app.py --server.port 8501 --server.headless true",
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Streamlit Local 8502",
+			"type": "shell",
+			"command": "/var/data/python/bin/streamlit run app.py --server.port 8502 --server.headless true",
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Restart Streamlit",
+			"type": "shell",
+			"command": "pkill -f 'streamlit run' 2>/dev/null; sleep 2; /usr/bin/python3 -m streamlit run app.py --server.port 8502",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Run Streamlit",
+			"type": "shell",
+			"command": "/usr/bin/python3 -m streamlit run app.py --server.port 8502",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Test xlsm row count",
+			"type": "shell",
+			"command": "/usr/bin/python3 -c \"\nimport openpyxl, sys\nf = 'FINAL COMPARABLE SPREADSHEET 2026.xlsm'\nprint('--- read_only=False (normal mode) ---')\nwb = openpyxl.load_workbook(f, data_only=True, keep_vba=False)\nws = wb.active\nrows = [r for r in ws.iter_rows(values_only=True) if any(v is not None for v in r)]\nprint('rows found:', len(rows))\nprint('--- read_only=True ---')\nwb2 = openpyxl.load_workbook(f, read_only=True, data_only=True)\nws2 = wb2.active\nrows2 = [r for r in ws2.iter_rows(values_only=True) if any(v is not None for v in r)]\nprint('rows found:', len(rows2))\n\"",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Test xlsm rows",
+			"type": "shell",
+			"command": "/usr/bin/python3 -c \"\nimport openpyxl\nf = '/home/filipejrcorreia/Downloads/FINAL COMPARABLE SPREADSHEET 2026.xlsm'\nprint('--- read_only=False ---')\nwb = openpyxl.load_workbook(f, data_only=True, keep_vba=False)\nws = wb.active\nrows = [r for r in ws.iter_rows(values_only=True) if any(v is not None for v in r)]\nprint('rows:', len(rows))\nprint('--- read_only=True ---')\nwb2 = openpyxl.load_workbook(f, read_only=True, data_only=True)\nws2 = wb2.active\nrows2 = [r for r in ws2.iter_rows(values_only=True) if any(v is not None for v in r)]\nprint('rows:', len(rows2))\n\"",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Test row count",
+			"type": "shell",
+			"command": "/usr/bin/python3 test_rows.py",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Test row count 2",
+			"type": "shell",
+			"command": "/usr/bin/python3 test_rows.py",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Test rows 3",
+			"type": "shell",
+			"command": "/usr/bin/python3 test_rows.py",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Restart Streamlit Debug",
+			"type": "shell",
+			"command": "pkill -f 'streamlit run' ; sleep 2 && /usr/bin/python3 -m streamlit run app.py --server.port 8502",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Restart App",
+			"type": "shell",
+			"command": "pkill -f 'streamlit run' ; sleep 3 ; /usr/bin/python3 -m streamlit run app.py --server.port 8502",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Streamlit Start Fresh",
+			"type": "shell",
+			"command": "pkill -f 'streamlit run' ; sleep 2 ; /usr/bin/python3 -m streamlit run app.py --server.port 8502",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Streamlit Live",
+			"type": "shell",
+			"command": "pkill -f 'streamlit run' ; sleep 2 ; exec /usr/bin/python3 -m streamlit run app.py --server.port 8502",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Check Streamlit",
+			"type": "shell",
+			"command": "pgrep -a -f 'streamlit' && echo 'IS RUNNING' || echo 'NOT RUNNING'",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Streamlit Nohup",
+			"type": "shell",
+			"command": "pkill -f 'streamlit run' ; sleep 1 ; nohup /usr/bin/python3 -m streamlit run app.py --server.port 8502 > /tmp/streamlit.log 2>&1 & echo \"Started PID $!\" && sleep 4 && grep -m2 'Local URL\\|ERROR\\|Error' /tmp/streamlit.log",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Check Log",
+			"type": "shell",
+			"command": "cat /tmp/streamlit.log 2>/dev/null || echo 'no log yet'",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Check Streamlit2",
+			"type": "shell",
+			"command": "pgrep -a -f 'streamlit run' && cat /tmp/streamlit.log 2>/dev/null || echo 'not running'",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Restart App Final",
+			"type": "shell",
+			"command": "pkill -f 'streamlit run' ; sleep 2 ; exec /usr/bin/python3 -m streamlit run app.py --server.port 8502",
+			"isBackground": false,
+			"problemMatcher": []
+		}
+	]
+}

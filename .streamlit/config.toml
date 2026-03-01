@@ -1,4 +1,4 @@
 [server]
-# Disable inotify-based file watcher — avoids "watch limit reached" errors
-# on Streamlit Community Cloud's shared Linux containers.
-fileWatcherType = "none"
+# Use poll-based file watcher — avoids inotify watch limit errors but still
+# auto-reloads when app.py changes (unlike "none" which never reloads).
+fileWatcherType = "poll"

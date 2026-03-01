@@ -226,10 +226,13 @@ with st.sidebar:
         except Exception:
             pass
 
+    use_date_filter = st.checkbox("Enable date filter", value=False)
     date_from = st.date_input("From", value=min_date,
-                              min_value=min_date, max_value=max_date)
+                              min_value=min_date, max_value=max_date,
+                              disabled=not use_date_filter)
     date_to   = st.date_input("To",   value=max_date,
-                              min_value=min_date, max_value=max_date)
+                              min_value=min_date, max_value=max_date,
+                              disabled=not use_date_filter)
 
     st.divider()
     st.subheader("📐 Size / Lot")
@@ -276,8 +279,6 @@ filters: dict = {
     "country":    None if country_opt == "All" else country_opt,
     "price_min":  price_range[0] if price_range[0] > 0          else None,
     "price_max":  price_range[1] if price_range[1] < price_max_v else None,
-    "date_from":  date_from,
-    "date_to":    date_to,
     "sqft_min":   sqft_range[0] if sqft_range[0] > 0            else None,
     "sqft_max":   sqft_range[1] if sqft_range[1] < sqft_max_v   else None,
     "lot_min":    lot_range[0]  if lot_range[0]  > 0            else None,
@@ -291,17 +292,25 @@ filters: dict = {
     "guest":      guest_opt,
     "waterfront": waterfront_opt,
     "listed":     listed_opt,
+    # Date: only filter when explicitly enabled via checkbox
+    "date_from":  date_from if use_date_filter else None,
+    "date_to":    date_to   if use_date_filter else None,
 }
 
 # ── Always show results (auto-search) ─────────────────────────────────────────
 df = query(filters)
 stats = summary_stats(df)
 
+# ── Total DB count (independent of filters) ───────────────────────────────────
+_total_conn = get_conn()
+_total_rows = _total_conn.execute("SELECT COUNT(*) FROM comparables").fetchone()[0]
+_total_conn.close()
+
 # ── Header ────────────────────────────────────────────────────────────────────
 st.markdown("## 🏠 Real Estate Comparables Database")
 st.caption(
-    "Comparable sales database · "
-    f"Database: **{DB_FILE.split('/')[-1]}** · "
+    f"Total records in database: **{_total_rows:,}** · "
+    f"Matching current filters: **{len(df):,}** · "
     "Use the **Add Record** tab to enter new comparables."
 )
 
@@ -428,7 +437,8 @@ with tab_chart:
 
             # Average price over time (by year)
             yr_df = df.dropna(subset=["price_sold", "sale_date"]).copy()
-            yr_df["Year"] = pd.to_datetime(yr_df["sale_date"]).dt.year
+            yr_df["Year"] = pd.to_datetime(yr_df["sale_date"], format="mixed", dayfirst=False, errors="coerce").dt.year
+            yr_df = yr_df.dropna(subset=["Year"])
             avg_yr = yr_df.groupby("Year")["price_sold"].median().reset_index()
             avg_yr.columns = ["Year", "Median Price"]
             if len(avg_yr) > 1:
@@ -740,6 +750,8 @@ with tab_import:
                     pass
                 return v
 
+            st.markdown(f"**{len(data_up):,} data rows detected** — preview of first 10:")
+
             EXPECTED = [
                 "Property Name", "Address", "Parish", "Price Sold",
                 "Date", "Sq. ft.", "Bed", "Bath", "Lot Size",
@@ -770,7 +782,6 @@ with tab_import:
                     "Sq. ft.":         str(to_real(_g(row, "Sq. ft.")) or ""),
                 })
 
-            st.markdown(f"**{len(data_up):,} data rows detected** — preview of first 10:")
             st.dataframe(pd.DataFrame(preview_records), width="stretch", hide_index=True)
 
             # ── Validation report ──────────────────────────────────────
@@ -915,11 +926,14 @@ with tab_import:
                             )
 
                     _conn2.commit()
+                    db_count = _conn2.execute("SELECT COUNT(*) FROM comparables").fetchone()[0]
                     progress.progress(1.0, text="Done!")
                     action = "replaced with" if "Replace" in import_mode else "added —"
                     st.success(
-                        f"✅ Import complete: **{inserted:,}** records {action}."
+                        f"✅ Import complete: **{inserted:,}** records {action}. "
+                        f"DB now has **{db_count:,}** total rows."
                     )
+                    st.info(f"DEBUG — rows in DB after commit: **{db_count:,}**")
                     push_db(DB_FILE, f"Batch import: {inserted} records ({import_mode.split()[0].lower()})")
                     load_lookup_data.clear()
                     st.rerun()
