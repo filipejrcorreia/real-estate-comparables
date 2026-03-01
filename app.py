@@ -705,6 +705,7 @@ with tab_import:
             )
 
             ws_up = wb_up[chosen_sheet]
+            ws_up.reset_dimensions()   # ignore stale dimension tag in .xlsm files
             all_rows = [r for r in ws_up.iter_rows(values_only=True)
                         if any(v is not None for v in r)]
 
