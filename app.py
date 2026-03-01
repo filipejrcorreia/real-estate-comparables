@@ -40,9 +40,7 @@ st.set_page_config(
 
 # ── Ensure DB exists ──────────────────────────────────────────────────────────
 def ensure_db():
-    """Create an empty database with the correct schema if it doesn't exist."""
-    if os.path.exists(DB_FILE):
-        return
+    """Ensure the database schema and indexes exist (safe to run on any DB)."""
     conn = sqlite3.connect(DB_FILE)
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS comparables (
@@ -83,8 +81,10 @@ def ensure_db():
     conn.commit()
     conn.close()
 
-ensure_db()
+# Fetch from GitHub first so we don't create an empty DB before downloading.
+# ensure_db() runs afterwards to apply schema/indexes to the downloaded file.
 fetch_db(DB_FILE)
+ensure_db()
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
 def get_conn():
