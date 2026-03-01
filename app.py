@@ -676,22 +676,18 @@ with tab_import:
     )
 
     if uploaded:
-        import openpyxl as _openpyxl
         import io as _io
 
+        file_bytes = uploaded.getvalue()  # idempotent read
+
         try:
-            # read_only=True is NOT used: it trusts a stale <dimension> tag in
-            # .xlsm files and silently cuts iteration short (e.g. 150 of 1530 rows).
-            # Opening in normal mode is slightly heavier but reads every row.
-            wb_up = _openpyxl.load_workbook(
-                _io.BytesIO(uploaded.read()), keep_vba=False, data_only=True
-            )
+            xl_file = pd.ExcelFile(_io.BytesIO(file_bytes), engine="openpyxl")
+            sheet_names = xl_file.sheet_names
         except Exception as e:
             st.error(f"Could not open file: {e}")
-            wb_up = None
+            xl_file = None
 
-        if wb_up:
-            sheet_names = wb_up.sheetnames
+        if xl_file is not None:
             chosen_sheet = st.selectbox(
                 "Sheet to import",
                 sheet_names,
@@ -707,24 +703,36 @@ with tab_import:
                 ],
             )
 
-            ws_up = wb_up[chosen_sheet]
-            all_rows = [r for r in ws_up.iter_rows(values_only=True)
-                        if any(v is not None for v in r)]
+            try:
+                # dtype=object keeps raw Python types (strings, numbers, dates)
+                # pandas reads ALL rows regardless of stale <dimension> tags
+                df_up = xl_file.parse(chosen_sheet, header=0, dtype=object)
+            except Exception as e:
+                st.error(f"Could not read sheet '{chosen_sheet}': {e}")
+                df_up = None
 
-            if len(all_rows) < 2:
-                st.warning("Sheet appears to be empty or has no data rows.")
-            else:
-                header_up = all_rows[0]
-                data_up   = all_rows[1:]
-                col_up    = {str(name).strip(): idx
-                             for idx, name in enumerate(header_up) if name}
+            if df_up is not None:
+                df_up.columns = [str(c).strip() for c in df_up.columns]
+                df_up = df_up.dropna(how="all")   # drop completely empty rows
+
+                # data_up is a list of dicts (one per row)
+                data_up = df_up.to_dict("records")
+                col_up  = {c: True for c in df_up.columns}   # for existence checks
 
                 def _g(row, name, default=None):
-                    idx = col_up.get(name)
-                    if idx is None or idx >= len(row):
+                    v = row.get(str(name).strip(), default)
+                    if v is None:
                         return default
-                    v = row[idx]
-                    return v if v is not None else default
+                    try:
+                        if pd.isna(v):
+                            return default
+                    except (TypeError, ValueError):
+                        pass
+                    return v
+
+                if not data_up:
+                    st.warning("Sheet appears to be empty or has no data rows.")
+                    st.stop()
 
                 EXPECTED = [
                     "Property Name", "Address", "Parish", "Price Sold",
