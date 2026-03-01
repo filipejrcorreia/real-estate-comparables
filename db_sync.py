@@ -73,15 +73,34 @@ def fetch_db(local_path: str) -> bool:
         return False
 
     try:
+        # Use the Git blobs API to get the blob SHA first, then stream the raw
+        # content via the media type header.  The Contents API silently returns
+        # an empty `content` field (or 403) for files larger than ~1 MB.
+        cfg_hdrs = _headers(cfg)
+
+        # Step 1: get file metadata to find the blob SHA
         r = requests.get(
             _api_url(cfg),
-            headers=_headers(cfg),
+            headers=cfg_hdrs,
             params={"ref": cfg["branch"]},
             timeout=30,
         )
         r.raise_for_status()
-        data = r.json()
-        raw = base64.b64decode(data["content"])
+        meta = r.json()
+
+        # Step 2: if content is provided inline (small file), use it directly;
+        #         otherwise download via the raw download_url.
+        inline = meta.get("content", "").replace("\n", "")
+        if inline:
+            raw = base64.b64decode(inline)
+        else:
+            download_url = meta.get("download_url")
+            if not download_url:
+                raise ValueError("GitHub returned no content and no download_url.")
+            r2 = requests.get(download_url, headers=cfg_hdrs, timeout=120)
+            r2.raise_for_status()
+            raw = r2.content
+
         with open(local_path, "wb") as f:
             f.write(raw)
         return True

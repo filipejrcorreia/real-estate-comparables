@@ -680,8 +680,11 @@ with tab_import:
         import io as _io
 
         try:
+            # read_only=True is NOT used: it trusts a stale <dimension> tag in
+            # .xlsm files and silently cuts iteration short (e.g. 150 of 1530 rows).
+            # Opening in normal mode is slightly heavier but reads every row.
             wb_up = _openpyxl.load_workbook(
-                _io.BytesIO(uploaded.read()), read_only=True, keep_vba=False
+                _io.BytesIO(uploaded.read()), keep_vba=False, data_only=True
             )
         except Exception as e:
             st.error(f"Could not open file: {e}")
@@ -705,7 +708,6 @@ with tab_import:
             )
 
             ws_up = wb_up[chosen_sheet]
-            ws_up.reset_dimensions()   # ignore stale dimension tag in .xlsm files
             all_rows = [r for r in ws_up.iter_rows(values_only=True)
                         if any(v is not None for v in r)]
 
