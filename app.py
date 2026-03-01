@@ -7,8 +7,6 @@ Run with:
 
 import os
 import sqlite3
-import subprocess
-import sys
 from datetime import date, datetime
 
 import pandas as pd
@@ -35,17 +33,51 @@ st.set_page_config(
 )
 
 # ── Ensure DB exists ──────────────────────────────────────────────────────────
-if not os.path.exists(DB_FILE):
-    st.warning("Database not found – building it now from the Excel file…")
-    result = subprocess.run(
-        [sys.executable, os.path.join(BASE_DIR, "build_db.py")],
-        capture_output=True, text=True
-    )
-    if result.returncode != 0:
-        st.error(f"Build failed:\n{result.stderr}")
-        st.stop()
-    st.success("Database built successfully! Reloading…")
-    st.rerun()
+def ensure_db():
+    """Create an empty database with the correct schema if it doesn't exist."""
+    if os.path.exists(DB_FILE):
+        return
+    conn = sqlite3.connect(DB_FILE)
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS comparables (
+            id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+            property_name            TEXT,
+            address                  TEXT,
+            parish                   TEXT,
+            parish_normalized        TEXT,
+            price_sold               REAL,
+            sale_date                TEXT,
+            sale_year                INTEGER,
+            sale_month               INTEGER,
+            sq_ft                    REAL,
+            beds                     INTEGER,
+            baths                    REAL,
+            lot_size_raw             TEXT,
+            lot_size_acres           REAL,
+            no_units                 INTEGER,
+            arv                      REAL,
+            assessment               REAL,
+            property_type            TEXT,
+            property_type_normalized TEXT,
+            guest                    TEXT,
+            pool                     TEXT,
+            waterfront               TEXT,
+            listed                   TEXT,
+            zone                     TEXT,
+            notes                    TEXT,
+            country                  TEXT DEFAULT 'Bermuda'
+        );
+        CREATE INDEX IF NOT EXISTS idx_parish ON comparables(parish_normalized);
+        CREATE INDEX IF NOT EXISTS idx_type   ON comparables(property_type_normalized);
+        CREATE INDEX IF NOT EXISTS idx_date   ON comparables(sale_date);
+        CREATE INDEX IF NOT EXISTS idx_price  ON comparables(price_sold);
+        CREATE INDEX IF NOT EXISTS idx_sq_ft  ON comparables(sq_ft);
+        CREATE INDEX IF NOT EXISTS idx_year   ON comparables(sale_year);
+    """)
+    conn.commit()
+    conn.close()
+
+ensure_db()
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
 def get_conn():
@@ -255,9 +287,9 @@ stats = summary_stats(df)
 # ── Header ────────────────────────────────────────────────────────────────────
 st.markdown("## 🏠 Real Estate Comparables Database")
 st.caption(
-    "Bermuda comparable sales data · "
+    "Comparable sales database · "
     f"Database: **{DB_FILE.split('/')[-1]}** · "
-    f"Last refreshed: run `python3 build_db.py` after updating the spreadsheet"
+    "Use the **Add Record** tab to enter new comparables."
 )
 
 # ── KPI strip ─────────────────────────────────────────────────────────────────
@@ -275,8 +307,8 @@ k5.metric("Max Price",
 st.divider()
 
 # ── Tabs: Results | Charts | Export ──────────────────────────────────────────
-tab_res, tab_chart, tab_export = st.tabs(
-    ["📋 Results Table", "📊 Charts & Analytics", "⬇️ Export / Report"]
+tab_res, tab_chart, tab_export, tab_add = st.tabs(
+    ["📋 Results Table", "📊 Charts & Analytics", "⬇️ Export / Report", "➕ Add Record"]
 )
 
 # ────────────────────────────────────────────────────────── Results Table ─────
@@ -484,3 +516,108 @@ with tab_export:
             st.markdown("**By Property Type**")
             t = df["type"].value_counts().rename_axis("Type").reset_index(name="Count")
             st.dataframe(t, use_container_width=True, hide_index=True)
+
+# ────────────────────────────────────────────────── Add Record ────
+with tab_add:
+    st.subheader("➕ Add New Comparable")
+    st.caption("Fields marked * are required. For Parish and Type, pick from the list or enter a custom value.")
+
+    with st.form("add_record_form", clear_on_submit=True):
+
+        st.markdown("**📍 Property Details**")
+        ca, cb = st.columns(2)
+        prop_name = ca.text_input("Property Name *", placeholder="e.g. Sunrise Villa")
+        address   = cb.text_input("Address",         placeholder="e.g. 12 Harbour Road")
+
+        cc, cd = st.columns(2)
+        parish_sel    = cc.selectbox("Parish",                    [""] + parishes + ["➕ Other…"])
+        parish_custom = cc.text_input("Custom parish (if Other)",  placeholder="Type here")
+        type_sel      = cd.selectbox("Property Type",             [""] + types    + ["➕ Other…"])
+        type_custom   = cd.text_input("Custom type (if Other)",    placeholder="Type here")
+
+        ce, cf = st.columns(2)
+        country = ce.text_input("Country",   value="Bermuda")
+        zone    = cf.text_input("Zone Code", placeholder="e.g. 110")
+
+        st.divider()
+        st.markdown("**💰 Financials**")
+        cg, ch = st.columns(2)
+        price_sold  = cg.number_input("Sale Price ($)",  min_value=0, value=None, step=1000, format="%d")
+        sale_date   = ch.date_input(  "Sale Date",       value=None)
+        arv         = cg.number_input("ARV ($)",         min_value=0, value=None, step=1000, format="%d")
+        assessment  = ch.number_input("Assessment ($)",  min_value=0, value=None, step=1000, format="%d")
+
+        st.divider()
+        st.markdown("**📐 Size & Features**")
+        ci, cj, ck = st.columns(3)
+        sq_ft          = ci.number_input("Sq. Ft.",           min_value=0,   value=None, step=10,   format="%d")
+        beds           = cj.number_input("Beds",              min_value=0,   value=None, step=1,    format="%d")
+        baths          = ck.number_input("Baths",             min_value=0.0, value=None, step=0.5)
+        units          = ci.number_input("No. Units",         min_value=0,   value=None, step=1,    format="%d")
+        lot_size_text  = cj.text_input(  "Lot Size (text)",   placeholder="e.g. 0.25 Acres")
+        lot_size_acres = ck.number_input("Lot Size (acres)",  min_value=0.0, value=None, step=0.01, format="%.3f")
+
+        st.divider()
+        st.markdown("**✅ Flags**")
+        cl, cm, cn, co2 = st.columns(4)
+        guest_v      = cl.selectbox("Guest Apt",  ["", "Y", "N"])
+        pool_v       = cm.selectbox("Pool",       ["", "Y", "N"])
+        waterfront_v = cn.selectbox("Waterfront", ["", "Y", "N"])
+        listed_v     = co2.selectbox("Listed",    ["", "Y", "N"])
+
+        notes = st.text_area("Notes", placeholder="Any additional notes…")
+
+        submitted = st.form_submit_button("💾 Save Record", type="primary", use_container_width=True)
+
+        if submitted:
+            if not prop_name.strip():
+                st.error("⚠️ Property Name is required.")
+            else:
+                parish_val = (parish_custom.strip() if parish_sel == "➕ Other…" else parish_sel) or None
+                type_val   = (type_custom.strip()   if type_sel   == "➕ Other…" else type_sel)   or None
+
+                sd_str  = sale_date.isoformat() if sale_date else None
+                sd_year = sale_date.year         if sale_date else None
+                sd_mon  = sale_date.month        if sale_date else None
+
+                _conn = get_conn()
+                try:
+                    _conn.execute("""
+                        INSERT INTO comparables (
+                            property_name, address,
+                            parish, parish_normalized,
+                            price_sold, sale_date, sale_year, sale_month,
+                            sq_ft, beds, baths,
+                            lot_size_raw, lot_size_acres,
+                            no_units, arv, assessment,
+                            property_type, property_type_normalized,
+                            guest, pool, waterfront, listed,
+                            zone, notes, country
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """, (
+                        prop_name.strip(),
+                        address.strip()   or None,
+                        parish_val, parish_val,
+                        price_sold,
+                        sd_str, sd_year, sd_mon,
+                        sq_ft, beds, baths,
+                        lot_size_text.strip() or None,
+                        lot_size_acres,
+                        units, arv, assessment,
+                        type_val, type_val,
+                        guest_v      or None,
+                        pool_v       or None,
+                        waterfront_v or None,
+                        listed_v     or None,
+                        zone.strip()  or None,
+                        notes.strip() or None,
+                        country.strip() or "Bermuda",
+                    ))
+                    _conn.commit()
+                    st.success(f"✅ **{prop_name.strip()}** saved successfully!")
+                    load_lookup_data.clear()
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Failed to save: {exc}")
+                finally:
+                    _conn.close()
