@@ -6,6 +6,7 @@ No Streamlit dependency — safe to import anywhere.
 """
 
 import io
+import math
 import sqlite3
 from datetime import date, datetime
 
@@ -106,6 +107,9 @@ def to_excel(df: pd.DataFrame, stats: dict) -> bytes:
         ]
         for i, (label, value, num_fmt) in enumerate(rows_s, start=3):
             ws2.write(i, 0, label, label_fmt)
+            # Treat NaN / Inf as missing (xlsxwriter cannot write them)
+            if isinstance(value, float) and not math.isfinite(value):
+                value = None
             if value is None:
                 ws2.write(i, 1, "N/A")
             elif num_fmt:
